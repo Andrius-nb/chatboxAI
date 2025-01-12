@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chatbox AI</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.3.4/axios.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -72,10 +73,61 @@
             cursor: pointer;
         }
         #module-select {
-            display: none;
             margin-bottom: 10px;
             padding: 5px;
             width: 100%;
+        }
+        .message-actions {
+            display: none;
+            margin-top: 5px;
+        }
+        .message:hover .message-actions {
+            display: block;
+        }
+        .message-actions button {
+            margin-right: 5px;
+            padding: 2px 5px;
+            font-size: 12px;
+        }
+        .file-upload {
+            position: relative;
+            display: inline-block;
+        }
+        .file-upload input[type="file"] {
+            display: none;
+        }
+        .file-preview {
+            max-width: 200px;
+            max-height: 200px;
+            margin: 5px;
+        }
+        .file-content {
+            font-size: 12px;
+            color: #666;
+            margin: 5px 0;
+            max-height: 100px;
+            overflow: auto;
+            background: #f5f5f5;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        .file-list {
+            padding: 5px;
+            margin-top: 5px;
+            border-top: 1px solid #eee;
+        }
+        .file-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+            padding: 2px 5px;
+            background-color: #f8f9fa;
+            border-radius: 3px;
+        }
+        .file-item .remove-file {
+            margin-left: 5px;
+            color: red;
+            cursor: pointer;
         }
     </style>
 </head>
@@ -85,15 +137,22 @@
             <option value="">Đang tải modules...</option>
         </select>
         <div class="chat-messages" id="chat-messages"></div>
+        <div class="file-list" id="file-list"></div>
         <div class="input-area">
             <textarea id="user-input" placeholder="Nhập tin nhắn của bạn..."></textarea>
+            <div class="file-upload">
+                <input type="file" id="file-input" multiple accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.txt">
+                <button onclick="document.getElementById('file-input').click()">
+                    📎
+                </button>
+            </div>
             <button onclick="sendMessage()">Gửi</button>
         </div>
     </div>
 
     <script>
-        const BASE_URL = 'https://api.electronhub.top/v1';
-        const PROXY_KEY = 'ek-x4pdU6jlSHSSFQmM3Vy7l7fKLpoUD16ieVFzwIud0iHuITHy8M';
+        const BASE_URL = 'https://api.rimunace.xyz/v1';
+        const PROXY_KEY = 'respy-6526b8ac8013fbc2a3';
 
         const api = axios.create({
             baseURL: BASE_URL,
@@ -104,34 +163,158 @@
         });
 
         let conversationHistory = [];
+        let uploadedFiles = [];
+
+        // Khởi tạo PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+        // Hàm đọc file dưới dạng text
+        function readFileAsText(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = (e) => reject(e);
+                reader.readAsText(file);
+            });
+        }
+
+        // Hàm đọc file dưới dạng Base64
+        function readFileAsBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = (e) => reject(e);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Hàm đọc nội dung PDF
+        async function readPDF(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+            let text = '';
+            
+            for(let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                text += textContent.items.map(item => item.str).join(' ') + '\n';
+            }
+            
+            return text;
+        }
+
+        // Hàm xử lý file dựa trên loại
+        async function processFile(file) {
+            const fileType = file.type;
+            try {
+                if (fileType.startsWith('image/')) {
+                    const base64 = await readFileAsBase64(file);
+                    return {
+                        type: 'image',
+                        content: base64,
+                        name: file.name
+                    };
+                } else if (fileType === 'application/pdf') {
+                    const text = await readPDF(file);
+                    return {
+                        type: 'pdf',
+                        content: text,
+                        name: file.name
+                    };
+                } else if (fileType.includes('document') || fileType.includes('text')) {
+                    const text = await readFileAsText(file);
+                    return {
+                        type: 'text',
+                        content: text,
+                        name: file.name
+                    };
+                } else {
+                    throw new Error('Định dạng file không được hỗ trợ');
+                }
+            } catch (error) {
+                console.error('Error processing file:', error);
+                throw error;
+            }
+        }
+
+        async function handleFileSelect(event) {
+            const files = event.target.files;
+            const fileList = document.getElementById('file-list');
+            
+            for (let file of files) {
+                try {
+                    const processedFile = await processFile(file);
+                    uploadedFiles.push(processedFile);
+                    
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+                    
+                    // Hiển thị preview tùy theo loại file
+                    let previewContent = '';
+                    if (processedFile.type === 'image') {
+                        previewContent = `<img src="${processedFile.content}" class="file-preview">`;
+                    } else {
+                        const contentPreview = processedFile.content.substring(0, 100) + '...';
+                        previewContent = `<div class="file-content">${contentPreview}</div>`;
+                    }
+                    
+                    fileItem.innerHTML = `
+                        <div>
+                            ${file.name} (${formatFileSize(file.size)})
+                            ${previewContent}
+                            <span class="remove-file" onclick="removeFile('${file.name}')">&times;</span>
+                        </div>
+                    `;
+                    fileList.appendChild(fileItem);
+                } catch (error) {
+                    alert(`Lỗi khi xử lý file ${file.name}: ${error.message}`);
+                }
+            }
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            else if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            else return (bytes / 1048576).toFixed(1) + ' MB';
+        }
+
+        function removeFile(fileName) {
+            uploadedFiles = uploadedFiles.filter(file => file.name !== fileName);
+            const fileList = document.getElementById('file-list');
+            const fileItems = fileList.getElementsByClassName('file-item');
+            for (let item of fileItems) {
+                if (item.textContent.includes(fileName)) {
+                    fileList.removeChild(item);
+                    break;
+                }
+            }
+        }
 
         async function loadModules() {
-    try {
-        const response = await api.get('/models');
-        const modules = response.data.data || response.data;
-        const moduleSelect = document.getElementById('module-select');
-        moduleSelect.innerHTML = '';
-        if (Array.isArray(modules)) {
-            modules.forEach((module, index) => {
-                const option = document.createElement('option');
-                option.value = module.id || module;
-                option.textContent = module.id || module;
-                moduleSelect.appendChild(option);
-                
-                // Tự động chọn giá trị thứ 20 (index 19)
-                if (index === 19) {
-                    option.selected = true;
+            try {
+                const response = await api.get('/models');
+                const modules = response.data.data || response.data;
+                const moduleSelect = document.getElementById('module-select');
+                moduleSelect.innerHTML = '';
+                if (Array.isArray(modules)) {
+                    modules.forEach((module, index) => {
+                        const option = document.createElement('option');
+                        option.value = module.id || module;
+                        option.textContent = module.id || module;
+                        moduleSelect.appendChild(option);
+                        if (index === 0) {
+                            option.selected = true;
+                        }
+                    });
+                } else {
+                    console.error('Unexpected module data structure:', modules);
+                    alert('Cấu trúc dữ liệu module không mong đợi. Vui lòng kiểm tra console để biết thêm chi tiết.');
                 }
-            });
-        } else {
-            console.error('Unexpected module data structure:', modules);
-            alert('Cấu trúc dữ liệu module không mong đợi. Vui lòng kiểm tra console để biết thêm chi tiết.');
+            } catch (error) {
+                console.error('Error loading modules:', error);
+                alert('Không thể tải danh sách modules. Vui lòng kiểm tra console để biết thêm chi tiết.');
+            }
         }
-    } catch (error) {
-        console.error('Error loading modules:', error);
-        alert('Không thể tải danh sách modules. Vui lòng kiểm tra console để biết thêm chi tiết.');
-    }
-}
 
         function addMessage(message, isUser, isUpdate = false) {
             const chatMessages = document.getElementById('chat-messages');
@@ -151,10 +334,28 @@
         async function sendMessage() {
             const userInput = document.getElementById('user-input');
             const message = userInput.value.trim();
-            if (message) {
-                conversationHistory.push({ role: 'user', content: message });
-                addMessage(message, true);
+            
+            if (message || uploadedFiles.length > 0) {
+                let fullMessage = message;
+
+                // Thêm nội dung file vào tin nhắn
+                if (uploadedFiles.length > 0) {
+                    uploadedFiles.forEach(file => {
+                        if (file.type === 'image') {
+                            fullMessage += `\n[Hình ảnh đính kèm: ${file.name}]`;
+                        } else {
+                            fullMessage += `\n[File ${file.name}]\n${file.content}`;
+                        }
+                    });
+                }
+
+                conversationHistory.push({ role: 'user', content: fullMessage });
+                addMessage(fullMessage, true);
                 userInput.value = '';
+
+                // Xóa danh sách file đã upload
+                uploadedFiles = [];
+                document.getElementById('file-list').innerHTML = '';
 
                 const moduleSelect = document.getElementById('module-select');
                 const selectedModule = moduleSelect.value;
@@ -180,6 +381,9 @@
             }
         }
 
+        // Event listeners
+        document.getElementById('file-input').addEventListener('change', handleFileSelect);
+        
         document.getElementById('user-input').addEventListener('keypress', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
